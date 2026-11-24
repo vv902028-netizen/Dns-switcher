@@ -1,0 +1,158 @@
+name: Build APK & Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Тип сборки APK"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - debug
+      release_tag:
+        description: "Тег релиза (например, v1.0.0; если пусто — создастся автоматически)"
+        required: false
+        default: ""
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build APK & Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Resolve build configuration
+        id: config
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BUILD_TYPE="release"
+            RELEASE_TAG="${{ github.ref_name }}"
+          else
+            BUILD_TYPE="${{ inputs.build_type || 'release' }}"
+            if [ -n "${{ inputs.release_tag }}" ]; then
+              RELEASE_TAG="${{ inputs.release_tag }}"
+            else
+              RELEASE_TAG="v1.0.${{ github.run_number }}"
+            fi
+          fi
+          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare signing keystores
+        id: signing
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Restore or generate debug.keystore required by debugConfig
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f "debug.keystore" ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias androiddebugkey \
+              -storepass android \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          # Prepare release keystore (uses repository secrets if configured;
+          # otherwise derives a stable upload keystore from debug.keystore so updates work cleanly)
+          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$SECRET_STORE_PASSWORD" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
+            echo "STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            cp debug.keystore my-upload-key.jks
+            keytool -changealias \
+              -keystore my-upload-key.jks \
+              -storepass android \
+              -alias androiddebugkey \
+              -destalias upload \
+              -keypass android
+            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
+          fi
+
+          echo "KEYSTORE_PATH=${GITHUB_WORKSPACE}/my-upload-key.jks" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        shell: bash
+        run: |
+          if [ "${{ steps.config.outputs.build_type }}" = "debug" ]; then
+            gradle :app:assembleDebug --no-daemon --stacktrace
+            SRC_APK="app/build/outputs/apk/debug/app-debug.apk"
+          else
+            gradle :app:assembleRelease --no-daemon --stacktrace
+            SRC_APK="app/build/outputs/apk/release/app-release.apk"
+          fi
+
+          if [ ! -f "$SRC_APK" ]; then
+            echo "APK not found at $SRC_APK"
+            exit 1
+          fi
+
+          APK_NAME="puls-${{ steps.config.outputs.release_tag }}-${{ steps.config.outputs.build_type }}.apk"
+          mkdir -p dist
+          cp "$SRC_APK" "dist/${APK_NAME}"
+          echo "apk_path=dist/${APK_NAME}" >> "$GITHUB_ENV"
+          echo "apk_name=${APK_NAME}" >> "$GITHUB_ENV"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.apk_name }}
+          path: ${{ env.apk_path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.config.outputs.release_tag }}
+          BUILD_TYPE: ${{ steps.config.outputs.build_type }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$apk_path" --clobber
+          else
+            gh release create "$TAG" "$apk_path" \
+              --target "${GITHUB_SHA}" \
+              --title "Пульс ${TAG}" \
+              --notes "Автоматическая сборка APK (${BUILD_TYPE}) из коммита \`${GITHUB_SHA::7}\`." \
+              --generate-notes
+          fi

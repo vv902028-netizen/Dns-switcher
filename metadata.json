@@ -1,0 +1,6 @@
+{
+  "name": "Пульс",
+  "description": "Минималистичный DNS-прокси через локальный VPN с поддержкой доменов и встроенным тестером доступности нейросетей",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

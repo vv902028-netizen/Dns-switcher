@@ -1,0 +1,62 @@
+<resources>
+    <string name="app_name">Пульс</string>
+    <string name="tab_vpn">VPN</string>
+    <string name="tab_tester">Тестер AI</string>
+
+    <string name="status_disconnected">Отключено</string>
+    <string name="status_connecting">Подключение…</string>
+    <string name="status_connected">Подключено</string>
+    <string name="status_error">Ошибка подключения</string>
+
+    <string name="action_connect">Включить DNS</string>
+    <string name="action_disconnect">Отключить</string>
+    <string name="action_add_server">Добавить DNS</string>
+    <string name="action_edit_server">Изменить сервер</string>
+    <string name="action_save">Сохранить</string>
+    <string name="action_cancel">Отмена</string>
+    <string name="action_delete">Удалить</string>
+    <string name="action_edit">Изменить</string>
+    <string name="action_test_all">Проверить все</string>
+    <string name="action_stop_test">Остановить</string>
+    <string name="action_select_best">Выбрать лучший</string>
+    <string name="action_test_single">Проверить</string>
+
+    <string name="section_servers">DNS-серверы</string>
+    <string name="label_queries">Запросов</string>
+    <string name="label_protocol">Протокол</string>
+    <string name="label_resolved_ip">IP</string>
+    <string name="label_uptime">Время</string>
+
+    <string name="field_address_label">Адрес (IP, домен, DoH или DoT)</string>
+    <string name="field_address_placeholder">xbox-dns.ru или 1.1.1.1</string>
+    <string name="field_name_label">Название (необязательно)</string>
+    <string name="field_name_placeholder">Например, Основной AI DNS</string>
+    <string name="field_transport_label">Режим подключения</string>
+
+    <string name="transport_auto">Авто</string>
+    <string name="transport_udp">UDP 53</string>
+    <string name="transport_doh">DoH</string>
+    <string name="transport_dot">DoT</string>
+
+    <string name="error_empty_address">Введите IP-адрес, домен или URL</string>
+    <string name="error_invalid_address">Некорректный IP-адрес или домен</string>
+    <string name="error_vpn_permission_denied">Разрешение на VPN не предоставлено</string>
+    <string name="error_no_server_selected">Выберите DNS-сервер из списка</string>
+
+    <string name="tester_subtitle">Проверка DNS и реального TLS/HTTPS доступа к нейросетям</string>
+    <string name="tester_empty">Нет серверов для проверки. Добавьте DNS на вкладке VPN.</string>
+    <string name="servers_empty">Список серверов пуст. Нажмите «+», чтобы добавить IP или домен.</string>
+    <string name="ai_status_available">Доступно</string>
+    <string name="ai_status_restricted">Ограничено</string>
+    <string name="ai_status_unreachable">Недоступно</string>
+
+    <string name="notification_channel_name">DNS-туннель Пульс</string>
+    <string name="notification_channel_desc">Показывает статус локального DNS VPN-подключения</string>
+    <string name="notification_title_connected">Пульс активен</string>
+    <string name="notification_action_stop">Отключить</string>
+
+    <string name="cd_toggle_vpn">Переключить DNS VPN</string>
+    <string name="cd_add_server">Добавить DNS-сервер</string>
+    <string name="cd_server_menu">Действия с сервером</string>
+    <string name="cd_expand_details">Показать детали проверки</string>
+</resources>
