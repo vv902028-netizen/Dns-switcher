@@ -39,15 +39,53 @@ jobs:
           java-version: "21"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools build-tools;36.0.0 platforms;android-36"
 
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null || true
+      - name: Ensure Android SDK 36.1 & accept licenses
+        shell: bash
+        run: |
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=${SDK_DIR}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_DIR}" >> "$GITHUB_ENV"
+
+          SDKMANAGER=""
+          for candidate in \
+            "${SDK_DIR}/cmdline-tools/latest/bin/sdkmanager" \
+            "${SDK_DIR}/cmdline-tools/bin/sdkmanager" \
+            "$(command -v sdkmanager 2>/dev/null || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found in ${SDK_DIR}"
+            exit 1
+          fi
+
+          echo "Using sdkmanager: ${SDKMANAGER}"
+          set +o pipefail
+          yes | "$SDKMANAGER" --sdk_root="$SDK_DIR" --licenses > /dev/null 2>&1 || true
+          set -o pipefail
+
+          "$SDKMANAGER" --sdk_root="$SDK_DIR" --install \
+            "platform-tools" \
+            "build-tools;36.0.0" \
+            "platforms;android-36"
+
+          # Install minor API level 36.1 if published as a separate SDK package
+          if "$SDKMANAGER" --sdk_root="$SDK_DIR" --list 2>/dev/null | grep -q "platforms;android-36.1"; then
+            "$SDKMANAGER" --sdk_root="$SDK_DIR" --install "platforms;android-36.1"
+          fi
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.3.1"
+          validate-wrappers: false
 
       - name: Resolve build configuration
         id: config
@@ -58,14 +96,16 @@ jobs:
             RELEASE_TAG="${{ github.ref_name }}"
           else
             BUILD_TYPE="${{ inputs.build_type || 'release' }}"
-            if [ -n "${{ inputs.release_tag }}" ]; then
-              RELEASE_TAG="${{ inputs.release_tag }}"
+            INPUT_TAG="$(echo "${{ inputs.release_tag }}" | xargs)"
+            if [ -n "$INPUT_TAG" ]; then
+              RELEASE_TAG="$INPUT_TAG"
             else
               RELEASE_TAG="v1.0.${{ github.run_number }}"
             fi
           fi
-          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "build_type=${BUILD_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Build type: ${BUILD_TYPE}, Release tag: ${RELEASE_TAG}"
 
       - name: Prepare signing keystores
         id: signing
@@ -75,10 +115,14 @@ jobs:
           SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          # Restore or generate debug.keystore required by debugConfig
+          # Restore debug.keystore from base64 (sanitizing newlines/whitespace) or generate it
+          rm -f debug.keystore my-upload-key.jks
           if [ -f "debug.keystore.base64" ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
-          elif [ ! -f "debug.keystore" ]; then
+            tr -d '\r\n ' < debug.keystore.base64 | base64 -d > debug.keystore || rm -f debug.keystore
+          fi
+
+          if [ ! -s "debug.keystore" ] || ! keytool -list -keystore debug.keystore -storepass android >/dev/null 2>&1; then
+            rm -f debug.keystore
             keytool -genkeypair -v \
               -keystore debug.keystore \
               -storetype PKCS12 \
@@ -92,11 +136,11 @@ jobs:
           fi
 
           # Prepare release keystore (uses repository secrets if configured;
-          # otherwise derives a stable upload keystore from debug.keystore so updates work cleanly)
+          # otherwise derives a stable upload keystore from debug.keystore)
           if [ -n "$KEYSTORE_BASE64" ] && [ -n "$SECRET_STORE_PASSWORD" ] && [ -n "$SECRET_KEY_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > my-upload-key.jks
-            echo "STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
-            echo "KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+            printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n ' | base64 -d > my-upload-key.jks
+            echo "STORE_PASSWORD=${SECRET_STORE_PASSWORD}" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}" >> "$GITHUB_ENV"
           else
             cp debug.keystore my-upload-key.jks
             keytool -changealias \
@@ -114,16 +158,26 @@ jobs:
       - name: Build APK
         shell: bash
         run: |
+          gradle --version
           if [ "${{ steps.config.outputs.build_type }}" = "debug" ]; then
-            gradle :app:assembleDebug --no-daemon --stacktrace
+            gradle :app:assembleDebug \
+              --no-daemon \
+              --no-configuration-cache \
+              -Dorg.gradle.jvmargs="-Xmx3g -Dfile.encoding=UTF-8" \
+              --stacktrace
             SRC_APK="app/build/outputs/apk/debug/app-debug.apk"
           else
-            gradle :app:assembleRelease --no-daemon --stacktrace
+            gradle :app:assembleRelease \
+              --no-daemon \
+              --no-configuration-cache \
+              -Dorg.gradle.jvmargs="-Xmx3g -Dfile.encoding=UTF-8" \
+              --stacktrace
             SRC_APK="app/build/outputs/apk/release/app-release.apk"
           fi
 
           if [ ! -f "$SRC_APK" ]; then
-            echo "APK not found at $SRC_APK"
+            echo "ERROR: APK not found at $SRC_APK"
+            ls -la app/build/outputs/apk/ || true
             exit 1
           fi
 
@@ -146,13 +200,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.config.outputs.release_tag }}
           BUILD_TYPE: ${{ steps.config.outputs.build_type }}
+          APK_PATH: ${{ env.apk_path }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$apk_path" --clobber
+            gh release upload "$TAG" "$APK_PATH" --clobber
           else
-            gh release create "$TAG" "$apk_path" \
+            RELEASE_NOTES="Автоматическая сборка APK (${BUILD_TYPE}) из коммита \`${GITHUB_SHA::7}\`."
+            gh release create "$TAG" "$APK_PATH" \
               --target "${GITHUB_SHA}" \
               --title "Пульс ${TAG}" \
-              --notes "Автоматическая сборка APK (${BUILD_TYPE}) из коммита \`${GITHUB_SHA::7}\`." \
-              --generate-notes
+              --notes "$RELEASE_NOTES" \
+              --generate-notes \
+            || gh release create "$TAG" "$APK_PATH" \
+              --target "${GITHUB_SHA}" \
+              --title "Пульс ${TAG}" \
+              --notes "$RELEASE_NOTES"
           fi
